@@ -2,9 +2,6 @@
   <img src="images/_Image.png" alt="知识星球数据采集器" width="200">
   <h1>知识星球数据采集器</h1>
   <p>知识星球内容爬取与文件下载工具，支持话题采集、文件批量下载等功能</p>
-  
-  [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Platform](https://img.shields.io/badge/Platform-Windows | Linux | macOS-lightgrey.svg)]()
-  
   <img src="images/info.png" alt="群组详情页面" height="400">
 </div>
 
@@ -119,6 +116,29 @@ uv run -m backend.zsxq_interactive_crawler
   - 例如当前示例配置中，群组 `88851415151812` 的文件路径为：`output/databases/88851415151812/downloads/`。
 - **图片缓存（可安全删除）**: `output/databases/{group_id}/images/`  
   - 用于话题图片预览的本地缓存，如被删除，后续访问时会自动重新生成。
+
+## 日志与排障
+
+后端已统一使用 Loguru 管理日志，并接管 `print`、标准 `logging`、FastAPI / Uvicorn 访问日志和后台任务日志。默认日志目录：
+
+```text
+output/logs/{year}/{month}/{day}/
+├── app.log              # INFO 及以上业务日志
+├── debug.log            # DEBUG 及以上完整诊断日志
+├── error.log            # ERROR 及以上错误和堆栈
+└── tasks/{task_id}.log  # 单个后台任务日志
+```
+
+常用环境变量：
+
+- `ZSXQ_LOG_DIR`: 日志根目录，默认 `output/logs`。
+- `ZSXQ_LOG_LEVEL`: 文件日志级别，默认 `DEBUG`。
+- `ZSXQ_CONSOLE_LOG_LEVEL`: 控制台日志级别，默认 `INFO`。
+- `ZSXQ_LOG_RETENTION`: 日志保留时间，默认 `30 days`。
+- `ZSXQ_LOG_ROTATION`: 日志轮转时间，默认 `00:00`。
+- `ZSXQ_CAPTURE_PRINT`: 是否捕获历史 `print` 输出，默认 `1`。
+
+排查长时间运行无输出的问题时，优先查看当天的 `debug.log` 和对应的 `tasks/{task_id}.log`。
 
 
 ## 项目结构
