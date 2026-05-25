@@ -334,6 +334,7 @@ const [quickLastDays, setQuickLastDays] = useState<number>(30);
 const [rangeStartDate, setRangeStartDate] = useState<string>('');
 const [rangeEndDate, setRangeEndDate] = useState<string>('');
 const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
+const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(false);
 
   const hasLocalTopics = (groupStats?.topics_count || 0) > 0;
   const allCrawlLabel = hasLocalTopics ? '继续爬取' : '全量爬取';
@@ -790,9 +791,22 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
     }
   };
 
-  const handleDownloadByTime = async () => {
+  const handleDownloadByTime = async (mode: 'latest' | 'range' = 'range') => {
     try {
+      setDownloadTimeDialogOpen(false);
       setFileLoading('download-time');
+      const timeRange = mode === 'range'
+        ? (
+            rangeStartDate || rangeEndDate
+              ? {
+                  collectMode: 'range' as const,
+                  startTime: rangeStartDate || undefined,
+                  endTime: rangeEndDate || undefined,
+                }
+              : { collectMode: 'range' as const, lastDays: Math.max(1, quickLastDays || 1) }
+          )
+        : { collectMode: 'latest' as const };
+
       const response = await apiClient.downloadFiles(
         groupId,
         undefined,
@@ -803,7 +817,8 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
         useRandomInterval ? downloadIntervalMin : undefined,
         useRandomInterval ? downloadIntervalMax : undefined,
         useRandomInterval ? longSleepIntervalMin : undefined,
-        useRandomInterval ? longSleepIntervalMax : undefined
+        useRandomInterval ? longSleepIntervalMax : undefined,
+        timeRange
       );
       toast.success(`文件下载任务已创建: ${(response as any).task_id}`);
       // 设置当前任务ID以显示日志
@@ -1215,10 +1230,8 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
       const response = await apiClient.downloadSingleFile(groupId, fileId, fileName, fileSize) as any;
       toast.success(`文件下载任务已创建: ${response.task_id}`);
 
-      // 设置当前任务ID以显示日志
+      // 记录任务ID用于日志标签页查看，保持当前话题列表不跳转。
       setCurrentTaskId(response.task_id);
-      // 自动切换到日志标签页
-      setActiveTab('logs');
 
       // 定期检查文件状态
       const checkStatus = async () => {
@@ -2853,15 +2866,92 @@ const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
                           </div>
                         </div>
                         {selectedDownloadOption === 'time' && (
-                          <Button
-                            size="sm"
-                            className="w-full h-7 text-xs bg-purple-600 hover:bg-purple-700"
-                      
-                            onClick={handleDownloadByTime}
-                            disabled={!!fileLoading}
-                          >
-                            {fileLoading === 'download-time' ? '执行中...' : '开始'}
-                          </Button>
+                          <AlertDialog open={downloadTimeDialogOpen} onOpenChange={setDownloadTimeDialogOpen}>
+                            <Button
+                              size="sm"
+                              className="w-full h-7 text-xs bg-purple-600 hover:bg-purple-700"
+                              onClick={() => setDownloadTimeDialogOpen(true)}
+                              disabled={!!fileLoading}
+                            >
+                              {fileLoading === 'download-time' ? '执行中...' : '开始'}
+                            </Button>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>获取最新文件或按时间区间下载</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  默认先补齐最近文件列表再下载；也可选择最近N天或自定义时间范围。
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <div className="space-y-3">
+                                <div className="text-xs text-gray-600">快速选择：最近N天</div>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    value={quickLastDays}
+                                    onChange={(e) => setQuickLastDays(parseInt(e.target.value || '1'))}
+                                    className="h-7 text-xs w-24"
+                                  />
+                                  <span className="text-xs text-gray-500">天</span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={() => setQuickLastDays(3)}
+                                  >
+                                    3天
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={() => setQuickLastDays(7)}
+                                  >
+                                    7天
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={() => setQuickLastDays(30)}
+                                  >
+                                    30天
+                                  </Button>
+                                </div>
+                                <div className="text-[10px] text-gray-400">或 自定义日期范围</div>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="date"
+                                    value={rangeStartDate}
+                                    onChange={(e) => setRangeStartDate(e.target.value)}
+                                    className="h-7 text-xs"
+                                  />
+                                  <span className="text-xs text-gray-500">~</span>
+                                  <Input
+                                    type="date"
+                                    value={rangeEndDate}
+                                    onChange={(e) => setRangeEndDate(e.target.value)}
+                                    className="h-7 text-xs"
+                                  />
+                                </div>
+                              </div>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel onClick={(e) => { e.stopPropagation(); setDownloadTimeDialogOpen(false); }}>取消</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => handleDownloadByTime('latest')}
+                                  className="bg-purple-600 hover:bg-purple-700 focus:ring-purple-600"
+                                >
+                                  从最新开始
+                                </AlertDialogAction>
+                                <AlertDialogAction
+                                  onClick={() => handleDownloadByTime('range')}
+                                  className="bg-teal-600 hover:bg-teal-700 focus:ring-teal-600"
+                                >
+                                  按时间区间开始
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
                         )}
                       </div>
 

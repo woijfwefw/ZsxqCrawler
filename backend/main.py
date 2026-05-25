@@ -292,7 +292,11 @@ class CrawlSettingsRequest(BaseModel):
 
 class FileDownloadRequest(BaseModel):
     max_files: Optional[int] = Field(default=None, description="最大下载文件数")
-    sort_by: str = Field(default="download_count", description="排序方式: download_count 或 time")
+    sort_by: str = Field(default="download_count", description="排序方式: download_count 或 create_time")
+    collect_mode: Optional[str] = Field(default=None, description="按时间下载前的文件列表刷新模式: latest 或 range")
+    start_time: Optional[str] = Field(default=None, description="按时间下载的开始时间，支持 YYYY-MM-DD 或 ISO8601")
+    end_time: Optional[str] = Field(default=None, description="按时间下载的结束时间，默认当前时间")
+    last_days: Optional[int] = Field(default=None, ge=1, le=3650, description="按时间下载最近N天")
     download_interval: float = Field(default=1.0, ge=0.1, le=300.0, description="单次下载间隔（秒）")
     long_sleep_interval: float = Field(default=60.0, ge=10.0, le=3600.0, description="长休眠间隔（秒）")
     files_per_batch: int = Field(default=10, ge=1, le=100, description="下载多少文件后触发长休眠")
@@ -2039,7 +2043,10 @@ def run_file_download_task(task_id: str, group_id: str, max_files: Optional[int]
                           files_per_batch: int = 10, download_interval_min: Optional[float] = None,
                           download_interval_max: Optional[float] = None,
                           long_sleep_interval_min: Optional[float] = None,
-                          long_sleep_interval_max: Optional[float] = None):
+                          long_sleep_interval_max: Optional[float] = None,
+                          collect_mode: Optional[str] = None,
+                          start_time: Optional[str] = None, end_time: Optional[str] = None,
+                          last_days: Optional[int] = None):
     """后台执行文件下载任务"""
     try:
         update_task(task_id, "running", "开始文件下载...")
@@ -2082,6 +2089,13 @@ def run_file_download_task(task_id: str, group_id: str, max_files: Optional[int]
         add_task_log(task_id, f"   ⏱️ 单次下载间隔: {download_interval}秒")
         add_task_log(task_id, f"   😴 长休眠间隔: {long_sleep_interval}秒")
         add_task_log(task_id, f"   📦 批次大小: {files_per_batch}个文件")
+        if sort_by == "create_time" and collect_mode:
+            add_task_log(task_id, f"   🔄 文件列表刷新模式: {collect_mode}")
+        if sort_by == "create_time" and collect_mode == "range":
+            add_task_log(
+                task_id,
+                f"   🗓️ 文件时间范围: start={start_time or 'auto'}, end={end_time or 'now'}, last_days={last_days or 'none'}"
+            )
 
         # 将下载器实例存储到全局字典中
         global file_downloader_instances
@@ -2095,8 +2109,18 @@ def run_file_download_task(task_id: str, group_id: str, max_files: Optional[int]
         add_task_log(task_id, "📡 连接到知识星球API...")
         add_task_log(task_id, "🔍 开始收集文件列表...")
 
-        # 先收集文件列表
-        collect_result = downloader.collect_incremental_files()
+        # 先收集文件列表。按时间下载支持像话题“获取最新”一样先从最新页按范围补齐文件库。
+        if sort_by == "create_time" and collect_mode == "range":
+            collect_result = downloader.collect_files_by_time(
+                sort="by_create_time",
+                range_start_time=start_time,
+                range_end_time=end_time,
+                last_days=last_days
+            )
+        elif sort_by == "create_time" and collect_mode == "latest":
+            collect_result = downloader.collect_files_by_time(sort="by_create_time")
+        else:
+            collect_result = downloader.collect_incremental_files()
 
         # 检查任务是否被停止
         if is_task_stopped(task_id):
@@ -2109,7 +2133,14 @@ def run_file_download_task(task_id: str, group_id: str, max_files: Optional[int]
         if sort_by == "download_count":
             result = downloader.download_files_from_database(max_files=max_files, status_filter='pending',order_by='download_count DESC')
         else:
-            result = downloader.download_files_from_database(max_files=max_files, status_filter='pending',order_by='create_time DESC')
+            result = downloader.download_files_from_database(
+                max_files=max_files,
+                status_filter='pending',
+                order_by='create_time DESC',
+                start_time=start_time if collect_mode == "range" else None,
+                end_time=end_time if collect_mode == "range" else None,
+                last_days=last_days if collect_mode == "range" else None
+            )
 
         # 检查任务是否被停止
         if is_task_stopped(task_id):
@@ -2917,7 +2948,11 @@ async def download_files(group_id: str, request: FileDownloadRequest, background
             request.download_interval_min,
             request.download_interval_max,
             request.long_sleep_interval_min,
-            request.long_sleep_interval_max
+            request.long_sleep_interval_max,
+            request.collect_mode,
+            request.start_time,
+            request.end_time,
+            request.last_days
         )
 
         return {"task_id": task_id, "message": "任务已创建，正在后台执行"}

@@ -479,7 +479,12 @@ class ApiClient {
                      downloadInterval: number = 1.0, longSleepInterval: number = 60.0,
                      filesPerBatch: number = 10, downloadIntervalMin?: number,
                      downloadIntervalMax?: number, longSleepIntervalMin?: number,
-                     longSleepIntervalMax?: number): Promise<TaskCreateResponse> {
+                     longSleepIntervalMax?: number, timeRange?: {
+                       collectMode?: 'latest' | 'range';
+                       startTime?: string;
+                       endTime?: string;
+                       lastDays?: number;
+                     }): Promise<TaskCreateResponse> {
     const requestBody: any = {
       max_files: maxFiles,
       sort_by: sortBy,
@@ -494,6 +499,13 @@ class ApiClient {
       requestBody.download_interval_max = downloadIntervalMax;
       requestBody.long_sleep_interval_min = longSleepIntervalMin;
       requestBody.long_sleep_interval_max = longSleepIntervalMax;
+    }
+
+    if (timeRange) {
+      if (timeRange.collectMode) requestBody.collect_mode = timeRange.collectMode;
+      if (timeRange.startTime) requestBody.start_time = timeRange.startTime;
+      if (timeRange.endTime) requestBody.end_time = timeRange.endTime;
+      if (timeRange.lastDays) requestBody.last_days = timeRange.lastDays;
     }
 
     return this.request(`/api/files/download/${groupId}`, {

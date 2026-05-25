@@ -27,6 +27,89 @@ from .zsxq_retry import (
 class ZSXQFileDownloader:
     """知识星球文件下载器"""
 
+    @staticmethod
+    def _beijing_timezone() -> datetime.timezone:
+        """返回知识星球接口常用的东八区时区。"""
+        return datetime.timezone(datetime.timedelta(hours=8))
+
+    @classmethod
+    def _parse_time_value(cls, value: Optional[str], end_of_day: bool = False) -> Optional[datetime.datetime]:
+        """解析用户输入或接口返回的时间，统一转成东八区时间。"""
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        bj_tz = cls._beijing_timezone()
+        try:
+            if text.isdigit():
+                raw_timestamp = int(text)
+                if raw_timestamp > 10_000_000_000:
+                    raw_timestamp = raw_timestamp / 1000
+                return datetime.datetime.fromtimestamp(raw_timestamp, tz=bj_tz)
+
+            if len(text) == 10 and text[4] == '-' and text[7] == '-':
+                parsed = datetime.datetime.strptime(text, '%Y-%m-%d')
+                if end_of_day:
+                    parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999000)
+                return parsed.replace(tzinfo=bj_tz)
+
+            if 'T' in text and len(text) == 16:
+                text = f"{text}:00"
+            if text.endswith('Z'):
+                text = text[:-1] + '+00:00'
+            if len(text) >= 5 and text[-5] in ['+', '-'] and text[-3] != ':':
+                text = text[:-2] + ':' + text[-2:]
+
+            parsed = datetime.datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=bj_tz)
+            return parsed.astimezone(bj_tz)
+        except Exception:
+            return None
+
+    @classmethod
+    def _resolve_time_range(
+        cls,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        last_days: Optional[int] = None,
+    ) -> tuple:
+        """解析最近N天或自定义日期范围。"""
+        bj_tz = cls._beijing_timezone()
+        now = datetime.datetime.now(bj_tz)
+        start_dt = cls._parse_time_value(start_time)
+        end_dt = cls._parse_time_value(end_time, end_of_day=True)
+
+        if last_days and last_days > 0:
+            if end_dt is None:
+                end_dt = now
+            start_dt = end_dt - datetime.timedelta(days=last_days)
+
+        if start_dt and end_dt and start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        return start_dt, end_dt
+
+    @classmethod
+    def _datetime_to_api_index(cls, value: datetime.datetime) -> str:
+        """将时间转为文件列表接口使用的毫秒级 index。"""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=cls._beijing_timezone())
+        return str(int(value.timestamp() * 1000))
+
+    @classmethod
+    def _format_db_time_bound(cls, value: datetime.datetime, upper: bool = False) -> str:
+        """生成适合和 create_time 字符串比较的边界值。"""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=cls._beijing_timezone())
+        value = value.astimezone(cls._beijing_timezone())
+        if upper:
+            return value.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '+0800'
+        return value.strftime('%Y-%m-%dT%H:%M:%S')
+
     def __init__(self, cookie: str, group_id: str, db_path: str = None, download_dir: str = "downloads",
                  download_interval: float = 1.0, long_sleep_interval: float = 60.0,
                  files_per_batch: int = 10, download_interval_min: float = None,
@@ -899,12 +982,35 @@ class ZSXQFileDownloader:
             'time_based_count': result[2] if result else 0
         }
 
-    def collect_files_by_time(self, sort: str = "by_create_time", start_time: Optional[str] = None, **kwargs) -> Dict[str, int]:
+    def collect_files_by_time(
+        self,
+        sort: str = "by_create_time",
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        last_days: Optional[int] = None,
+        range_start_time: Optional[str] = None,
+        range_end_time: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, int]:
         """按时间顺序收集文件列表到数据库（使用完整的数据库结构）"""
         self.log(f"📊 开始按时间顺序收集文件列表到完整数据库...")
         self.log(f"   📅 排序方式: {sort}")
         if start_time:
-            self.log(f"   ⏰ 起始时间: {start_time}")
+            self.log(f"   📑 起始索引: {start_time}")
+        if last_days:
+            self.log(f"   📆 最近天数: {last_days}")
+
+        range_start_input = range_start_time
+        range_end_input = range_end_time if range_end_time is not None else end_time
+        if range_start_input is None and (range_end_input is not None or last_days is not None):
+            range_start_input = start_time
+
+        range_start_dt, range_end_dt = self._resolve_time_range(range_start_input, range_end_input, last_days)
+        has_time_range = sort == "by_create_time" and (range_start_dt is not None or range_end_dt is not None)
+        if has_time_range:
+            start_label = range_start_dt.isoformat() if range_start_dt else "不限"
+            end_label = range_end_dt.isoformat() if range_end_dt else "不限"
+            self.log(f"   🗓️ 收集时间范围: {start_label} ~ {end_label}")
 
         # 检查是否强制刷新
         force_refresh = kwargs.get('force_refresh', False)
@@ -926,7 +1032,7 @@ class ZSXQFileDownloader:
         # 如果是按时间排序且非强制刷新模式，获取数据库中最新文件的时间戳
         # 仅从最新页开始增量刷新时使用；从历史 index 续采时不能用最新时间拦截。
         db_latest_time = None
-        if sort == "by_create_time" and not force_refresh and initial_files > 0 and not start_time:
+        if sort == "by_create_time" and not force_refresh and initial_files > 0 and not start_time and not has_time_range:
             self.file_db.cursor.execute('''
                 SELECT MAX(create_time) FROM files
                 WHERE create_time IS NOT NULL AND create_time != ''
@@ -945,7 +1051,7 @@ class ZSXQFileDownloader:
             'files': 0, 'topics': 0, 'users': 0, 'groups': 0,
             'images': 0, 'comments': 0, 'likes': 0, 'columns': 0, 'solutions': 0
         }
-        current_index = start_time  # 使用时间戳作为index
+        current_index = self._datetime_to_api_index(range_end_dt) if range_end_dt else start_time
         page_count = 0
 
         try:
@@ -973,6 +1079,49 @@ class ZSXQFileDownloader:
                     break
 
                 self.log(f"   📋 当前页面: {len(files)} 个文件")
+
+                should_stop_after_range = False
+                if has_time_range:
+                    filtered_files = []
+                    newer_count = 0
+                    older_count = 0
+                    missing_time_count = 0
+
+                    for file_info in files:
+                        create_time = file_info.get('file', {}).get('create_time')
+                        file_dt = self._parse_time_value(create_time)
+                        if not file_dt:
+                            missing_time_count += 1
+                            continue
+
+                        if range_end_dt and file_dt > range_end_dt:
+                            newer_count += 1
+                            continue
+
+                        if range_start_dt and file_dt < range_start_dt:
+                            older_count += 1
+                            should_stop_after_range = True
+                            continue
+
+                        filtered_files.append(file_info)
+
+                    self.log(
+                        f"   📊 范围分析: 范围内{len(filtered_files)}个, "
+                        f"晚于结束{newer_count}个, 早于开始{older_count}个"
+                        + (f", 缺少时间{missing_time_count}个" if missing_time_count else "")
+                    )
+
+                    if not filtered_files and should_stop_after_range:
+                        self.log("   ✅ 已到达起始时间之前，停止收集")
+                        break
+
+                    if not filtered_files:
+                        self.log("   ⏭️ 当前页无范围内文件，继续翻页")
+                        files = []
+                        data['resp_data']['files'] = []
+                    elif len(filtered_files) < len(files):
+                        data['resp_data']['files'] = filtered_files
+                        files = filtered_files
 
                 # 如果是按时间排序且非强制刷新模式，检查本页文件是否有新于数据库的
                 should_stop_after_insert = False
@@ -1020,8 +1169,13 @@ class ZSXQFileDownloader:
                     )
 
                     if not new_files_by_id:
-                        self.log("   ✅ 当前页文件均已存在，停止收集")
-                        break
+                        if has_time_range:
+                            self.log("   ✅ 当前页文件均已存在，继续检查时间范围内后续页面")
+                            files = []
+                            data['resp_data']['files'] = []
+                        else:
+                            self.log("   ✅ 当前页文件均已存在，停止收集")
+                            break
 
                     if len(new_files_by_id) < len(files):
                         self.log(f"   🔄 过滤掉{existing_count}个已存在文件，只导入{len(new_files_by_id)}个新文件")
@@ -1030,7 +1184,11 @@ class ZSXQFileDownloader:
 
                 # 使用完整数据库导入整个API响应
                 try:
-                    page_stats = self.file_db.import_file_response(data)
+                    if files:
+                        page_stats = self.file_db.import_file_response(data)
+                    else:
+                        page_stats = {key: 0 for key in total_imported_stats}
+
                     if existing_file_ids and not force_refresh:
                         existing_file_ids.update(
                             file_info.get('file', {}).get('file_id')
@@ -1048,6 +1206,10 @@ class ZSXQFileDownloader:
                     if should_stop_after_insert:
                         self.log(f"   ✅ 已插入本页新数据，后续页面均为旧数据，停止收集")
                         self.log(f"   💡 提示: 如需强制重新收集，请传入 force_refresh=True 参数")
+                        break
+
+                    if should_stop_after_range:
+                        self.log("   ✅ 已处理时间范围内文件，后续页面早于起始时间，停止收集")
                         break
 
                 except Exception as e:
@@ -1156,6 +1318,15 @@ class ZSXQFileDownloader:
         recent_days = kwargs.get('recent_days')
         if recent_days:
             self.log(f"   📅 时间筛选: 最近{recent_days}天")
+        range_start_dt, range_end_dt = self._resolve_time_range(
+            kwargs.get('start_time') or kwargs.get('range_start_time'),
+            kwargs.get('end_time') or kwargs.get('range_end_time'),
+            kwargs.get('last_days')
+        )
+        if range_start_dt or range_end_dt:
+            start_label = range_start_dt.isoformat() if range_start_dt else "不限"
+            end_label = range_end_dt.isoformat() if range_end_dt else "不限"
+            self.log(f"   🗓️ 时间范围: {start_label} ~ {end_label}")
         order_by = kwargs.get('order_by', 'create_time DESC')
         self.log(f"   🔃 排序方式: {order_by}")
 
@@ -1174,6 +1345,14 @@ class ZSXQFileDownloader:
             cutoff_date = (datetime.now() - timedelta(days=recent_days)).strftime('%Y-%m-%dT%H:%M:%S')
             query_conditions += " AND create_time >= ?"
             query_params.append(cutoff_date)
+
+        if range_start_dt:
+            query_conditions += " AND create_time >= ?"
+            query_params.append(self._format_db_time_bound(range_start_dt))
+
+        if range_end_dt:
+            query_conditions += " AND create_time <= ?"
+            query_params.append(self._format_db_time_bound(range_end_dt, upper=True))
 
         # 从完整数据库获取文件列表（使用状态筛选和时间筛选）
         if max_files:
