@@ -3300,7 +3300,7 @@ async def get_topics(page: int = 1, per_page: int = 20, search: Optional[str] = 
         return {
             "topics": [
                 {
-                    "topic_id": topic[0],
+                    "topic_id": str(topic[0]) if topic[0] is not None else None,
                     "title": topic[1],
                     "create_time": topic[2],
                     "likes_count": topic[3],
@@ -3659,7 +3659,7 @@ async def get_groups():
         raise HTTPException(status_code=500, detail=f"获取群组列表失败: {str(e)}")
 
 @app.get("/api/topics/{topic_id}/{group_id}")
-async def get_topic_detail(topic_id: int, group_id: str):
+async def get_topic_detail(topic_id: str, group_id: str):
     """获取话题详情（仅从本地数据库读取，不主动爬取）
 
     注意：
@@ -3763,7 +3763,7 @@ def _fetch_article_markdown(article_url: str, headers: Dict[str, str], fallback_
 
 
 @app.get("/api/topics/{topic_id}/{group_id}/export-md")
-async def export_topic_markdown(topic_id: int, group_id: str,
+async def export_topic_markdown(topic_id: str, group_id: str,
                                 fetch_article: bool = True,
                                 format: str = "zip"):
     """导出话题为 Markdown 单文件或包含资源的 ZIP 归档。
@@ -3817,7 +3817,7 @@ async def export_topic_markdown(topic_id: int, group_id: str,
 
 
 @app.post("/api/topics/{topic_id}/{group_id}/refresh")
-async def refresh_topic(topic_id: int, group_id: str):
+async def refresh_topic(topic_id: str, group_id: str):
     """实时更新单个话题信息"""
     try:
         crawler = get_crawler_for_group(group_id)
@@ -3860,7 +3860,7 @@ async def refresh_topic(topic_id: int, group_id: str):
         raise HTTPException(status_code=500, detail=f"更新话题失败: {str(e)}")
 
 @app.post("/api/topics/{topic_id}/{group_id}/fetch-comments")
-async def fetch_more_comments(topic_id: int, group_id: str):
+async def fetch_more_comments(topic_id: str, group_id: str):
     """手动获取话题的更多评论（在已存在本地话题记录的前提下）"""
     try:
         crawler = get_crawler_for_group(group_id)
@@ -3911,7 +3911,7 @@ async def fetch_more_comments(topic_id: int, group_id: str):
         raise HTTPException(status_code=500, detail=f"获取更多评论失败: {str(e)}")
 
 @app.delete("/api/topics/{topic_id}/{group_id}")
-async def delete_single_topic(topic_id: int, group_id: int):
+async def delete_single_topic(topic_id: str, group_id: str):
     """删除单个话题及其所有关联数据"""
     crawler = None
     try:
@@ -3948,7 +3948,7 @@ async def delete_single_topic(topic_id: int, group_id: int):
         deleted = crawler.db.cursor.rowcount
         crawler.db.conn.commit()
 
-        return {"success": True, "deleted_topic_id": topic_id, "deleted": deleted > 0}
+        return {"success": True, "deleted_topic_id": str(topic_id), "deleted": deleted > 0}
     except Exception as e:
         try:
             if crawler and hasattr(crawler, 'db') and crawler.db:
@@ -3959,7 +3959,7 @@ async def delete_single_topic(topic_id: int, group_id: int):
 
 # 单个话题采集 API
 @app.post("/api/topics/fetch-single/{group_id}/{topic_id}")
-async def fetch_single_topic(group_id: str, topic_id: int, fetch_comments: bool = True):
+async def fetch_single_topic(group_id: str, topic_id: str, fetch_comments: bool = True):
     """爬取并导入单个话题（用于特殊话题测试），可选拉取完整评论"""
     try:
         # 使用该群的自动匹配账号
@@ -4012,7 +4012,7 @@ async def fetch_single_topic(group_id: str, topic_id: int, fetch_comments: bool 
 
         return {
             "success": True,
-            "topic_id": topic_id,
+            "topic_id": str(topic_id),
             "group_id": int(group_id),
             "imported": "updated" if existed else "created",
             "comments_fetched": comments_fetched
@@ -5368,7 +5368,7 @@ async def get_group_columns(group_id: str):
 
 
 @app.get("/api/groups/{group_id}/columns/{column_id}/topics")
-async def get_column_topics(group_id: str, column_id: int):
+async def get_column_topics(group_id: str, column_id: str):
     """获取专栏下的文章列表（从本地数据库）"""
     try:
         db = get_columns_db(group_id)
@@ -5384,7 +5384,7 @@ async def get_column_topics(group_id: str, column_id: int):
 
 
 @app.get("/api/groups/{group_id}/columns/topics/{topic_id}")
-async def get_column_topic_detail(group_id: str, topic_id: int):
+async def get_column_topic_detail(group_id: str, topic_id: str):
     """获取专栏文章详情（从本地数据库）"""
     try:
         db = get_columns_db(group_id)
@@ -5467,7 +5467,7 @@ def _hydrate_column_topic_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/api/groups/{group_id}/columns/topics/{topic_id}/export-md")
-async def export_column_topic_markdown(group_id: str, topic_id: int, format: str = "zip"):
+async def export_column_topic_markdown(group_id: str, topic_id: str, format: str = "zip"):
     """导出专栏文章为 Markdown 单文件或包含资源的 ZIP 归档。
 
     - format=zip（默认）：返回 README.md + assets/ 目录的 zip 包，含头像与图片
@@ -6406,7 +6406,7 @@ async def delete_all_columns(group_id: str):
 
 
 @app.get("/api/groups/{group_id}/columns/topics/{topic_id}/comments")
-async def get_column_topic_full_comments(group_id: str, topic_id: int):
+async def get_column_topic_full_comments(group_id: str, topic_id: str):
     """获取专栏文章的完整评论列表（从API实时获取并持久化到数据库）"""
     try:
         # 获取该群组使用的账号

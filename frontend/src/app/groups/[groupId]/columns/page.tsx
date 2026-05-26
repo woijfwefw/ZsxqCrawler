@@ -57,8 +57,8 @@ export default function ColumnsPage() {
   const [logPanelWidth, setLogPanelWidth] = useState(384); // 默认 w-96 = 384px
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<HTMLDivElement>(null);
-  const selectedColumnIdRef = useRef<number | null>(null);
-  const selectedTopicIdRef = useRef<number | null>(null);
+  const selectedColumnIdRef = useRef<string | null>(null);
+  const selectedTopicIdRef = useRef<string | null>(null);
   const columnsRefreshInFlightRef = useRef(false);
   const topicsRefreshInFlightRef = useRef(false);
 
@@ -109,7 +109,7 @@ export default function ColumnsPage() {
 
   // 加载文章详情
   const loadTopicDetail = useCallback(async (
-    topicId: number,
+    topicId: number | string,
     options: { silent?: boolean } = {}
   ) => {
     const { silent = false } = options;
@@ -133,7 +133,7 @@ export default function ColumnsPage() {
 
   // 加载专栏文章列表。自动刷新时保留当前选中文章，避免列表刷新打断阅读。
   const loadColumnTopics = useCallback(async (
-    columnId: number,
+    columnId: number | string,
     options: { silent?: boolean; preserveSelection?: boolean } = {}
   ) => {
     const { silent = false, preserveSelection = false } = options;

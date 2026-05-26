@@ -868,16 +868,18 @@ class ApiClient {
   }
 
   // 获取专栏下的文章列表
-  async getColumnTopics(groupId: number | string, columnId: number): Promise<{
+  async getColumnTopics(groupId: number | string, columnId: number | string): Promise<{
     column: ColumnInfo;
     topics: ColumnTopic[];
   }> {
-    return this.request(`/api/groups/${groupId}/columns/${columnId}/topics`);
+    const id = String(columnId);
+    return this.request(`/api/groups/${groupId}/columns/${id}/topics`);
   }
 
   // 获取专栏文章详情
-  async getColumnTopicDetail(groupId: number | string, topicId: number): Promise<ColumnTopicDetail> {
-    return this.request(`/api/groups/${groupId}/columns/topics/${topicId}`);
+  async getColumnTopicDetail(groupId: number | string, topicId: number | string): Promise<ColumnTopicDetail> {
+    const id = String(topicId);
+    return this.request(`/api/groups/${groupId}/columns/topics/${id}`);
   }
 
   // 导出专栏文章为 Markdown：默认 zip（含 assets/ 头像与图片，离线可读）。
@@ -886,16 +888,18 @@ class ApiClient {
     topicId: number | string,
     format: 'zip' | 'md' = 'zip',
   ): string {
+    const id = String(topicId);
     const params = new URLSearchParams({ format });
-    return `${this.baseUrl}/api/groups/${groupId}/columns/topics/${topicId}/export-md?${params.toString()}`;
+    return `${this.baseUrl}/api/groups/${groupId}/columns/topics/${id}/export-md?${params.toString()}`;
   }
 
-  async getColumnTopicFullComments(groupId: number | string, topicId: number): Promise<{
+  async getColumnTopicFullComments(groupId: number | string, topicId: number | string): Promise<{
     success: boolean;
     comments: ColumnComment[];
     total: number;
   }> {
-    return this.request(`/api/groups/${groupId}/columns/topics/${topicId}/comments`);
+    const id = String(topicId);
+    return this.request(`/api/groups/${groupId}/columns/topics/${id}/comments`);
   }
 
   // 采集群组所有专栏内容
@@ -937,7 +941,7 @@ class ApiClient {
 
 // 专栏相关类型定义
 export interface ColumnInfo {
-  column_id: number;
+  column_id: string;
   group_id: number;
   name: string;
   cover_url?: string;
@@ -948,8 +952,8 @@ export interface ColumnInfo {
 }
 
 export interface ColumnTopic {
-  topic_id: number;
-  column_id: number;
+  topic_id: string;
+  column_id: string;
   group_id: number;
   title?: string;
   text?: string;
@@ -960,7 +964,7 @@ export interface ColumnTopic {
 }
 
 export interface ColumnTopicDetail {
-  topic_id: number;
+  topic_id: string;
   group_id: number;
   type?: string;
   title?: string;

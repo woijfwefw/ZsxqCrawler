@@ -1021,7 +1021,7 @@ class ZSXQDatabase:
 
             # 构建基本话题信息
             topic_detail = {
-                "topic_id": topic_row[0],
+                "topic_id": str(topic_row[0]) if topic_row[0] is not None else None,
                 "type": topic_row[1],
                 "title": topic_row[2],
                 "create_time": topic_row[3],
@@ -1552,7 +1552,7 @@ class ZSXQDatabase:
             topics = []
             for topic in self.cursor.fetchall():
                 topic_data = {
-                    "topic_id": topic[0],
+                    "topic_id": str(topic[0]) if topic[0] is not None else None,
                     "title": topic[1],
                     "create_time": topic[2],
                     "likes_count": topic[3],

@@ -232,9 +232,9 @@ export default function GroupDetailPage() {
   const [tags, setTags] = useState<any[]>([]);
   const [selectedTag, setSelectedTag] = useState<number | null>(null);
   const [tagsLoading, setTagsLoading] = useState(false);
-  const [fetchingComments, setFetchingComments] = useState<Set<number>>(new Set());
-  const [refreshingTopics, setRefreshingTopics] = useState<Set<number>>(new Set());
-  const [deletingTopics, setDeletingTopics] = useState<Set<number>>(new Set());
+  const [fetchingComments, setFetchingComments] = useState<Set<string>>(new Set());
+  const [refreshingTopics, setRefreshingTopics] = useState<Set<string>>(new Set());
+  const [deletingTopics, setDeletingTopics] = useState<Set<string>>(new Set());
   const [cacheInfo, setCacheInfo] = useState<any>(null);
   const [clearingCache, setClearingCache] = useState(false);
   const [fileStatuses, setFileStatuses] = useState<Map<number, FileStatus>>(new Map());
@@ -938,15 +938,16 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
 
 
   // 刷新单个话题
-  const refreshSingleTopic = async (topicId: number) => {
-    if (refreshingTopics.has(topicId)) {
+  const refreshSingleTopic = async (topicId: number | string) => {
+    const id = String(topicId);
+    if (refreshingTopics.has(id)) {
       return; // 防止重复请求
     }
 
-    setRefreshingTopics(prev => new Set(prev).add(topicId));
+    setRefreshingTopics(prev => new Set(prev).add(id));
 
     try {
-      const response = await apiClient.refreshTopic(parseInt(topicId.toString()), groupId);
+      const response = await apiClient.refreshTopic(id, groupId);
 
       if (response.success) {
         toast.success(`${response.message} - 点赞:${response.updated_data.likes_count} 评论:${response.updated_data.comments_count}`);
@@ -954,7 +955,7 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
         // 更新当前话题列表中的数据，而不是重新加载整个列表
         setTopics(prevTopics =>
           prevTopics.map(topic =>
-            parseInt(topic.topic_id.toString()) === parseInt(topicId.toString())
+            String(topic.topic_id) === id
               ? {
                   ...topic,
                   likes_count: response.updated_data.likes_count,
@@ -975,26 +976,27 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
     } finally {
       setRefreshingTopics(prev => {
         const newSet = new Set(prev);
-        newSet.delete(topicId);
+        newSet.delete(id);
         return newSet;
       });
     }
   };
 
   // 删除单个话题（改用自定义弹窗，保留方法以兼容可能的调用）
-  const handleDeleteSingleTopic = async (topicId: number) => {
+  const handleDeleteSingleTopic = async (topicId: number | string) => {
     await deleteSingleTopicConfirmed(topicId);
   };
 
   // 删除单个话题（自定义弹窗调用，无浏览器确认）
-  const deleteSingleTopicConfirmed = async (topicId: number) => {
-    setDeletingTopics(prev => new Set(prev).add(topicId));
+  const deleteSingleTopicConfirmed = async (topicId: number | string) => {
+    const id = String(topicId);
+    setDeletingTopics(prev => new Set(prev).add(id));
     try {
-      const res = await apiClient.deleteSingleTopic(groupId, topicId) as any;
+      const res = await apiClient.deleteSingleTopic(groupId, id) as any;
       if (res && res.success) {
         // 从当前列表移除
         setTopics(prev =>
-          prev.filter(t => parseInt(t.topic_id.toString()) !== parseInt(topicId.toString()))
+          prev.filter(t => String(t.topic_id) !== id)
         );
         toast.success('话题已删除');
         // 刷新统计与标签
@@ -1009,7 +1011,7 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
     } finally {
       setDeletingTopics(prev => {
         const s = new Set(prev);
-        s.delete(topicId);
+        s.delete(id);
         return s;
       });
     }
@@ -1112,15 +1114,16 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
   };
 
   // 获取更多评论
-  const fetchMoreComments = async (topicId: number) => {
-    if (fetchingComments.has(topicId)) {
+  const fetchMoreComments = async (topicId: number | string) => {
+    const id = String(topicId);
+    if (fetchingComments.has(id)) {
       return; // 防止重复请求
     }
 
-    setFetchingComments(prev => new Set(prev).add(topicId));
+    setFetchingComments(prev => new Set(prev).add(id));
 
     try {
-      const response = await fetch(`/api/topics/${topicId}/${groupId}/fetch-comments`, {
+      const response = await fetch(`/api/topics/${id}/${groupId}/fetch-comments`, {
         method: 'POST',
       });
 
@@ -1142,7 +1145,7 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
     } finally {
       setFetchingComments(prev => {
         const newSet = new Set(prev);
-        newSet.delete(topicId);
+        newSet.delete(id);
         return newSet;
       });
     }

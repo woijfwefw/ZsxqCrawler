@@ -56,6 +56,13 @@ def _short_title_from_text(text: Optional[str], max_length: int = 32) -> str:
     return f"{first_line[:max_length].rstrip()}..."
 
 
+def _safe_id_string(value: Any) -> Optional[str]:
+    """把雪花 ID 转为字符串，避免前端 JavaScript Number 精度丢失。"""
+    if value is None:
+        return None
+    return str(value)
+
+
 def derive_topic_title(topic_data: Dict[str, Any]) -> str:
     """根据不同接口返回结构推导话题标题。"""
     if not isinstance(topic_data, dict):
@@ -336,7 +343,7 @@ class ZSXQColumnsDatabase:
         columns = []
         for row in self.cursor.fetchall():
             columns.append({
-                'column_id': row[0],
+                'column_id': _safe_id_string(row[0]),
                 'group_id': row[1],
                 'name': row[2],
                 'cover_url': row[3],
@@ -347,7 +354,7 @@ class ZSXQColumnsDatabase:
             })
         return columns
     
-    def get_column(self, column_id: int) -> Optional[Dict[str, Any]]:
+    def get_column(self, column_id: Any) -> Optional[Dict[str, Any]]:
         """获取单个专栏目录"""
         self.cursor.execute('''
             SELECT column_id, group_id, name, cover_url, topics_count,
@@ -358,7 +365,7 @@ class ZSXQColumnsDatabase:
         row = self.cursor.fetchone()
         if row:
             return {
-                'column_id': row[0],
+                'column_id': _safe_id_string(row[0]),
                 'group_id': row[1],
                 'name': row[2],
                 'cover_url': row[3],
@@ -394,7 +401,7 @@ class ZSXQColumnsDatabase:
         self.conn.commit()
         return topic_data.get('topic_id')
     
-    def get_column_topics(self, column_id: int) -> List[Dict[str, Any]]:
+    def get_column_topics(self, column_id: Any) -> List[Dict[str, Any]]:
         """获取专栏下的所有文章列表"""
         self.cursor.execute('''
             SELECT ct.topic_id, ct.column_id, ct.group_id, ct.title, ct.text, 
@@ -411,8 +418,8 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             title = row[3] or row[8] or _short_title_from_text(row[4])
             topics.append({
-                'topic_id': row[0],
-                'column_id': row[1],
+                'topic_id': _safe_id_string(row[0]),
+                'column_id': _safe_id_string(row[1]),
                 'group_id': row[2],
                 'title': title,
                 'text': row[4],
@@ -676,7 +683,7 @@ class ZSXQColumnsDatabase:
             return None
         
         result = {
-            'topic_id': row[0],
+            'topic_id': _safe_id_string(row[0]),
             'group_id': row[1],
             'type': row[2],
             'title': row[3],
@@ -855,7 +862,7 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             videos.append({
                 'video_id': row[0],
-                'topic_id': row[1],
+                'topic_id': _safe_id_string(row[1]),
                 'size': row[2],
                 'duration': row[3],
                 'cover_url': row[4],
@@ -1004,7 +1011,7 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             files.append({
                 'file_id': row[0],
-                'topic_id': row[1],
+                'topic_id': _safe_id_string(row[1]),
                 'name': row[2],
                 'size': row[3],
                 'hash': row[4],
@@ -1043,7 +1050,7 @@ class ZSXQColumnsDatabase:
         for row in self.cursor.fetchall():
             images.append({
                 'image_id': row[0],
-                'topic_id': row[1],
+                'topic_id': _safe_id_string(row[1]),
                 'original_url': row[2],
                 'group_id': row[3]
             })
