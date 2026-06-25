@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { cn } from '@/lib/utils';
 import SafeImage from './SafeImage';
 import ImportGroupPreviewCard from './ImportGroupPreviewCard';
+import McpPromptDialog from './McpPromptDialog';
 import '../styles/group-selector.css';
 
 interface GroupSelectorProps {
@@ -708,6 +709,7 @@ export default function GroupSelector({ onGroupSelected }: GroupSelectorProps) {
                 <UserCog className="h-4 w-4" />
                 账号管理
               </Button>
+              <McpPromptDialog />
             </div>
           </div>
         </div>

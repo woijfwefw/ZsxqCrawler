@@ -7,12 +7,11 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { ArrowLeft, MessageSquare, Clock, Search, Download, BarChart3, X, FileText, RefreshCw, Heart, MessageCircle, TrendingUp, Calendar, Trash2, Settings, Edit, File, FileImage, FileVideo, FileAudio, Archive, ExternalLink, RotateCcw, BookOpen, Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { apiClient, Group, GroupStats, Topic, FileStatus, Account, AccountSelf } from '@/lib/api';
+import { apiClient, Group, GroupStats, Topic, FileStatus, Account, AccountSelf, GapCandidate } from '@/lib/api';
 import { toast } from 'sonner';
 import SafeImage from '@/components/SafeImage';
 import TaskLogViewer from '@/components/TaskLogViewer';
@@ -222,7 +221,7 @@ export default function GroupDetailPage() {
   const [activeTab, setActiveTab] = useState('topics');
   const [retryCount, setRetryCount] = useState(0);
   const [isRetrying, setIsRetrying] = useState(false);
-  const [selectedCrawlOption, setSelectedCrawlOption] = useState<'latest' | 'all' | 'range' | null>('all');
+  const [selectedCrawlOption, setSelectedCrawlOption] = useState<'latest' | 'all' | 'range' | 'gap' | null>('all');
   const [selectedDownloadOption, setSelectedDownloadOption] = useState<'time' | 'count' | null>('time');
   // 注意：topic_id 可能超过 JS 安全整数范围，这里统一按字符串处理 ID
   const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
@@ -241,10 +240,7 @@ export default function GroupDetailPage() {
   const [downloadingFiles, setDownloadingFiles] = useState<Set<number>>(new Set());
 
   // 账号相关
-  const [accounts, setAccounts] = useState<Account[]>([]);
   const [groupAccount, setGroupAccount] = useState<Account | null>(null);
-  const [selectedAccountId, setSelectedAccountId] = useState<string>('');
-  const [assigningAccount, setAssigningAccount] = useState<boolean>(false);
   const [accountSelf, setAccountSelf] = useState<AccountSelf | null>(null);
   const [loadingAccountSelf, setLoadingAccountSelf] = useState<boolean>(false);
   const [refreshingAccountSelf, setRefreshingAccountSelf] = useState<boolean>(false);
@@ -334,6 +330,10 @@ const [quickLastDays, setQuickLastDays] = useState<number>(30);
 const [rangeStartDate, setRangeStartDate] = useState<string>('');
 const [rangeEndDate, setRangeEndDate] = useState<string>('');
 const [latestDialogOpen, setLatestDialogOpen] = useState<boolean>(false);
+const [gapDialogOpen, setGapDialogOpen] = useState<boolean>(false);
+const [gapCandidates, setGapCandidates] = useState<GapCandidate[]>([]);
+const [gapCandidatesLoading, setGapCandidatesLoading] = useState<boolean>(false);
+const [selectedGapIndex, setSelectedGapIndex] = useState<number | null>(null);
 const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(false);
 
   const hasLocalTopics = (groupStats?.topics_count || 0) > 0;
@@ -357,7 +357,6 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
     loadTags();
     loadCacheInfo();
     loadGroupAccount();
-    loadAccounts();
     loadGroupAccountSelf();
     loadColumnsSummary();
   }, [groupId]);
@@ -572,23 +571,12 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
     }
   };
 
-  // 加载账号列表
-  const loadAccounts = async () => {
-    try {
-      const res = await apiClient.listAccounts();
-      setAccounts(res.accounts || []);
-    } catch (err) {
-      console.error('加载账号列表失败:', err);
-    }
-  };
-
-  // 加载群组绑定账号
+  // 加载群组当前自动匹配到的账号
   const loadGroupAccount = async () => {
     try {
       const res = await apiClient.getGroupAccount(groupId);
       const acc = (res as any)?.account || null;
       setGroupAccount(acc);
-      setSelectedAccountId(acc?.id || '');
     } catch (err) {
       console.error('加载群组账号失败:', err);
     }
@@ -619,26 +607,6 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
       console.error('刷新账号用户信息失败:', err);
     } finally {
       setRefreshingAccountSelf(false);
-    }
-  };
-
-  // 绑定账号到当前群组
-  const handleAssignAccount = async () => {
-    if (!selectedAccountId) {
-      toast.error('请选择要绑定的账号');
-      return;
-    }
-    setAssigningAccount(true);
-    try {
-      await apiClient.assignGroupAccount(groupId, selectedAccountId);
-      toast.success('已绑定账号到该群组');
-      await loadGroupAccount();
-      await loadGroupAccountSelf();
-    } catch (err) {
-      toast.error('绑定失败');
-      console.error('绑定账号失败:', err);
-    } finally {
-      setAssigningAccount(false);
     }
   };
 
@@ -746,6 +714,71 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
       }, 2000);
     } catch (error) {
       toast.error(`创建任务失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setCrawlLoading(null);
+    }
+  };
+
+  const loadGapCandidates = async () => {
+    try {
+      setGapCandidatesLoading(true);
+      const res = await apiClient.getGroupGapCandidates(groupId, {
+        minGapHours: 72,
+        maxGaps: 8,
+        paddingHours: 12,
+      });
+      const gaps = (res?.gaps || []) as GapCandidate[];
+      setGapCandidates(gaps);
+      setSelectedGapIndex(gaps.length > 0 ? gaps[0].gap_index : null);
+      return gaps;
+    } catch (error) {
+      toast.error(`检测断层失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      setGapCandidates([]);
+      setSelectedGapIndex(null);
+      return [];
+    } finally {
+      setGapCandidatesLoading(false);
+    }
+  };
+
+  const handleOpenGapDialog = async () => {
+    setSelectedCrawlOption('gap');
+    setGapDialogOpen(true);
+    await loadGapCandidates();
+  };
+
+  const handleFillGap = async () => {
+    const selectedGap = gapCandidates.find((gap) => gap.gap_index === selectedGapIndex) || null;
+    if (!selectedGap) {
+      toast.error('请先选择一个断层区间');
+      return;
+    }
+
+    try {
+      setGapDialogOpen(false);
+      setCrawlLoading('gap');
+
+      const response = await apiClient.crawlByTimeRange(groupId, {
+        startTime: selectedGap.suggested_start_time,
+        endTime: selectedGap.suggested_end_time,
+        crawlIntervalMin,
+        crawlIntervalMax,
+        longSleepIntervalMin: crawlLongSleepIntervalMin,
+        longSleepIntervalMax: crawlLongSleepIntervalMax,
+        pagesPerBatch: Math.max(crawlPagesPerBatch, 5),
+      });
+
+      toast.success(`补全断层任务已创建: ${(response as any).task_id}`);
+      setCurrentTaskId((response as any).task_id);
+      setActiveTab('logs');
+
+      setTimeout(() => {
+        loadGroupStats();
+        loadTopics();
+        loadRecentTasks();
+      }, 2000);
+    } catch (error) {
+      toast.error(`创建补全任务失败: ${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setCrawlLoading(null);
     }
@@ -1334,6 +1367,13 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
     } catch {
       return '时间格式错误';
     }
+  };
+
+  const formatGapDuration = (gap: GapCandidate) => {
+    if (gap.gap_days >= 1) {
+      return `${gap.gap_days} 天`;
+    }
+    return `${gap.gap_hours} 小时`;
   };
 
   // 格式化获取时间
@@ -2237,29 +2277,6 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
                       )}
                     </div>
                   </div>
-                  {false && accounts.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <Select value={selectedAccountId} onValueChange={(v) => setSelectedAccountId(v)}>
-                        <SelectTrigger className="w-[240px]">
-                          <SelectValue placeholder="选择一个账号" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {accounts.map((acc) => (
-                            <SelectItem key={acc.id} value={acc.id}>
-                              {(acc.name || acc.id) + (acc.is_default ? '（默认）' : '')}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        size="sm"
-                        onClick={handleAssignAccount}
-                        disabled={!selectedAccountId || assigningAccount}
-                      >
-                        {assigningAccount ? '绑定中...' : '绑定到此群组'}
-                      </Button>
-                    </div>
-                  )}
                 </div>
 
                 {/* 标签区域 */}
@@ -2685,6 +2702,134 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
                             </AlertDialogContent>
                           </AlertDialog>
                         )}
+                      </div>
+
+                      {/* 补全断层区间 */}
+                      <div
+                        className={`relative border rounded-lg p-3 pr-8 cursor-pointer transition-all ${
+                          selectedCrawlOption === 'gap'
+                            ? 'bg-violet-50 border-violet-200'
+                            : 'border-gray-200 hover:bg-gray-50'
+                        }`}
+                        onClick={() => { void handleOpenGapDialog(); }}
+                      >
+                        <ModeTip>
+                          <div className="space-y-1">
+                            <p className="font-medium text-gray-900">补全断层区间</p>
+                            <p>自动分析本地时间轴中跨度异常大的空白段。</p>
+                            <p>适合“老数据和新数据之间留了一段没抓到”的场景。</p>
+                            <p>底层仍然复用按时间区间采集，但会先帮你找候选区间。</p>
+                          </div>
+                        </ModeTip>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <RotateCcw className={`h-3 w-3 ${selectedCrawlOption === 'gap' ? 'text-violet-600' : 'text-gray-400'}`} />
+                            <span className={`text-xs font-medium ${selectedCrawlOption === 'gap' ? 'text-violet-700' : 'text-gray-600'}`}>
+                              补全断层区间
+                            </span>
+                          </div>
+                          {hasLocalTopics ? (
+                            <Badge variant="secondary" className="text-xs px-1 py-0">新策略</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-xs px-1 py-0">需本地数据</Badge>
+                          )}
+                        </div>
+                        {selectedCrawlOption === 'gap' && (
+                          <Dialog open={gapDialogOpen} onOpenChange={setGapDialogOpen}>
+                            <Button
+                              size="sm"
+                              className="w-full h-7 text-xs bg-violet-600 hover:bg-violet-700"
+                              disabled={!!crawlLoading}
+                              onClick={() => { void handleOpenGapDialog(); }}
+                            >
+                              {crawlLoading === 'gap' ? '执行中...' : '检测并补全'}
+                            </Button>
+                            <DialogContent className="sm:max-w-2xl">
+                              <DialogHeader>
+                                <DialogTitle>补全断层区间</DialogTitle>
+                                <DialogDescription>
+                                  系统会从本地话题时间轴里找出明显的时间断层，并推荐一个可直接补抓的区间。
+                                </DialogDescription>
+                              </DialogHeader>
+
+                              {gapCandidatesLoading ? (
+                                <div className="py-6 text-sm text-gray-500">正在分析断层，请稍候...</div>
+                              ) : !hasLocalTopics ? (
+                                <div className="py-2 text-sm text-gray-500">
+                                  当前群组还没有本地话题数据，暂时无法分析断层。请先执行一次“获取最新”或“继续爬取”。
+                                </div>
+                              ) : gapCandidates.length === 0 ? (
+                                <div className="space-y-3 py-2">
+                                  <div className="text-sm text-gray-600">
+                                    暂未检测到明显断层（当前默认阈值：大于等于 72 小时）。
+                                  </div>
+                                  <div className="text-xs text-gray-400">
+                                    如果这个群本身发帖很少，可能不会自动识别出断层；这种情况仍建议手动使用“按时间区间开始”补抓。
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-3">
+                                  <div className="text-xs text-gray-500">
+                                    已按时间跨度从大到小排序。建议优先补跨度最大的断层。
+                                  </div>
+                                  <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                                    {gapCandidates.map((gap) => (
+                                      <button
+                                        key={gap.gap_index}
+                                        type="button"
+                                        className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                                          selectedGapIndex === gap.gap_index
+                                            ? 'border-violet-300 bg-violet-50'
+                                            : 'border-gray-200 hover:bg-gray-50'
+                                        }`}
+                                        onClick={() => setSelectedGapIndex(gap.gap_index)}
+                                      >
+                                        <div className="mb-1 flex items-center justify-between gap-3">
+                                          <div className="text-sm font-medium text-gray-900">
+                                            断层 #{gap.gap_index}
+                                          </div>
+                                          <Badge variant={selectedGapIndex === gap.gap_index ? 'default' : 'outline'} className="text-xs">
+                                            跨度 {formatGapDuration(gap)}
+                                          </Badge>
+                                        </div>
+                                        <div className="text-xs text-gray-700">
+                                          建议补抓：{formatDateTime(gap.suggested_start_time)} ~ {formatDateTime(gap.suggested_end_time)}
+                                        </div>
+                                        <div className="mt-1 text-[11px] text-gray-500">
+                                          相邻已存在话题：新侧 {formatDateTime(gap.newer_topic_time)} ／ 旧侧 {formatDateTime(gap.older_topic_time)}
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              <DialogFooter>
+                                <Button
+                                  variant="outline"
+                                  onClick={() => setGapDialogOpen(false)}
+                                >
+                                  取消
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  onClick={() => { void loadGapCandidates(); }}
+                                  disabled={gapCandidatesLoading}
+                                >
+                                  重新检测
+                                </Button>
+                                <Button
+                                  onClick={handleFillGap}
+                                  className="bg-violet-600 hover:bg-violet-700"
+                                  disabled={gapCandidatesLoading || gapCandidates.length === 0 || selectedGapIndex == null}
+                                >
+                                  开始补全
+                                </Button>
+                              </DialogFooter>
+                            </DialogContent>
+                          </Dialog>
+                        )}
+                      </div>
                       {/* 按时间区间爬取 */}
                       {false && (
                       <div
@@ -2779,10 +2924,6 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
                         )}
                       </div>
                       )}
-                      
-                      {/* 数据管理 */}
-                      </div>
-
                       {/* 数据管理 */}
                       {groupStats && groupStats.topics_count > 0 && (
                         <div className="border-t pt-3 mt-4">
@@ -2819,7 +2960,6 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
                           </AlertDialog>
                         </div>
                       )}
-                    </div>
 
                     {/* 话题爬取设置 */}
                     <div className="border rounded-lg p-3 cursor-pointer transition-all border-blue-200 hover:bg-blue-50">
@@ -2842,9 +2982,10 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
                       >
                         配置间隔参数
                       </Button>
-                      <div className="text-xs text-gray-500 mt-2">
-                        调整页面爬取间隔和批次设置，避免触发反爬虫机制。
-                      </div>
+                    <div className="text-xs text-gray-500 mt-2">
+                      调整页面爬取间隔和批次设置，避免触发反爬虫机制。
+                    </div>
+                  </div>
                     </div>
                   </TabsContent>
 
@@ -3082,6 +3223,7 @@ const [downloadTimeDialogOpen, setDownloadTimeDialogOpen] = useState<boolean>(fa
                       {crawlLoading === 'all' && (hasLocalTopics ? '正在继续向历史爬取...' : '正在全量爬取所有数据...')}
                       {crawlLoading === 'latest' && '正在获取最新记录...'}
                       {crawlLoading === 'range' && '正在按时间区间采集...'}
+                      {crawlLoading === 'gap' && '正在补全断层区间...'}
                       {fileLoading === 'download-time' && '正在按时间顺序下载文件...'}
                       {fileLoading === 'download-count' && '正在按下载次数下载文件...'}
                       {fileLoading === 'clear' && '正在删除文件数据库...'}

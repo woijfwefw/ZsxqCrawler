@@ -15,7 +15,7 @@ import TaskPanel from '@/components/TaskPanel';
 import ConfigPanel from '@/components/ConfigPanel';
 import GroupSelector from '@/components/GroupSelector';
 import AccountPanel from '@/components/AccountPanel';
-import { toast } from 'sonner';
+import McpPromptDialog from '@/components/McpPromptDialog';
 
 export default function Home() {
   const [stats, setStats] = useState<DatabaseStats | null>(null);
@@ -100,6 +100,7 @@ export default function Home() {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              <McpPromptDialog />
               <Button
                 variant="outline"
                 onClick={() => setSelectedGroup(null)}

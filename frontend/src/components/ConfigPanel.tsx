@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Loader2, Upload } from 'lucide-react';
 import { apiClient, ImportPreview } from '@/lib/api';
 import ImportGroupPreviewCard from './ImportGroupPreviewCard';
+import McpPromptDialog from './McpPromptDialog';
 import { toast } from 'sonner';
 
 interface ConfigPanelProps {
@@ -117,9 +118,12 @@ export default function ConfigPanel({ onConfigSaved }: ConfigPanelProps) {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-4">
         <div className="mb-4">
-          <p className="text-sm text-muted-foreground">
-            请选择导入已有数据，或配置知识星球 Cookie 后开始使用
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm text-muted-foreground">
+              请选择导入已有数据，或配置知识星球 Cookie 后开始使用
+            </p>
+            <McpPromptDialog />
+          </div>
         </div>
 
         <div className="max-w-5xl mx-auto space-y-4">

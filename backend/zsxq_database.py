@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
 
@@ -552,6 +553,97 @@ class ZSXQDatabase:
         except Exception as e:
             print(f"获取最新话题时间戳失败: {e}")
             return None
+
+    def _parse_topic_time(self, value: Optional[str]) -> Optional[datetime]:
+        """解析知识星球时间字符串，尽量兼容 +0800 / +08:00 / Z / 无时区格式。"""
+        if not value:
+            return None
+        try:
+            text = str(value).strip()
+            if not text:
+                return None
+            if text.endswith('Z'):
+                text = text[:-1] + '+00:00'
+            if len(text) >= 5 and text[-5] in ['+', '-'] and text[-3] != ':':
+                text = text[:-2] + ':' + text[-2:]
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+            return dt
+        except Exception:
+            return None
+
+    def _format_topic_time(self, dt: datetime) -> str:
+        """格式化为后端已有逻辑可直接消费的 +0800 风格时间。"""
+        return dt.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+    def get_gap_candidates(
+        self,
+        max_gaps: int = 5,
+        min_gap_hours: float = 72.0,
+        padding_hours: float = 12.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        检测本地 topics 时间轴中的可疑断层。
+        规则：按 create_time 降序检查相邻两条记录，若时间差超过阈值，则认为可能存在断层。
+        """
+        try:
+            min_gap_seconds = max(float(min_gap_hours or 0), 0.0) * 3600.0
+            padding_delta = timedelta(hours=max(float(padding_hours or 0), 0.0))
+
+            self.cursor.execute(
+                '''
+                SELECT topic_id, title, create_time
+                FROM topics
+                WHERE create_time IS NOT NULL AND create_time != ''
+                ORDER BY create_time DESC
+                '''
+            )
+            rows = self.cursor.fetchall()
+            if len(rows) < 2:
+                return []
+
+            candidates: List[Dict[str, Any]] = []
+            for idx in range(len(rows) - 1):
+                newer_row = rows[idx]
+                older_row = rows[idx + 1]
+
+                newer_dt = self._parse_topic_time(newer_row[2])
+                older_dt = self._parse_topic_time(older_row[2])
+                if not newer_dt or not older_dt:
+                    continue
+
+                gap_seconds = (newer_dt - older_dt).total_seconds()
+                if gap_seconds <= 0 or gap_seconds < min_gap_seconds:
+                    continue
+
+                suggested_start = older_dt - padding_delta
+                suggested_end = newer_dt + padding_delta
+
+                candidates.append({
+                    "sequence_index": idx + 1,
+                    "gap_seconds": int(gap_seconds),
+                    "gap_hours": round(gap_seconds / 3600.0, 2),
+                    "gap_days": round(gap_seconds / 86400.0, 2),
+                    "newer_topic_id": str(newer_row[0]) if newer_row[0] is not None else None,
+                    "newer_topic_title": newer_row[1] or "",
+                    "newer_topic_time": newer_row[2],
+                    "older_topic_id": str(older_row[0]) if older_row[0] is not None else None,
+                    "older_topic_title": older_row[1] or "",
+                    "older_topic_time": older_row[2],
+                    "suggested_start_time": self._format_topic_time(suggested_start),
+                    "suggested_end_time": self._format_topic_time(suggested_end),
+                    "padding_hours": float(padding_hours or 0),
+                })
+
+            candidates.sort(key=lambda item: item["gap_seconds"], reverse=True)
+            for rank, item in enumerate(candidates, 1):
+                item["gap_index"] = rank
+
+            return candidates[: max(int(max_gaps or 0), 0)] if max_gaps else candidates
+        except Exception as e:
+            print(f"检测时间断层失败: {e}")
+            return []
     
     def _import_all_users(self, topic_data: Dict[str, Any]):
         """导入话题相关的所有用户信息"""

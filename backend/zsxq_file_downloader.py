@@ -17,6 +17,11 @@ from typing import Dict, Optional, Any
 import requests
 
 from .zsxq_file_database import ZSXQFileDatabase
+from .zsxq_request_profiles import (
+    build_zsxq_file_stream_headers,
+    build_zsxq_mobile_headers,
+    is_mobile_only_error,
+)
 from .zsxq_retry import (
     ensure_global_max_retries,
     is_global_retry_code,
@@ -275,8 +280,11 @@ class ZSXQFileDownloader:
             print(f"Cookie清理失败: {e}")
             return cookie  # 返回原始值
 
-    def get_stealth_headers(self) -> Dict[str, str]:
+    def get_stealth_headers(self, mobile: bool = False) -> Dict[str, str]:
         """获取反检测请求头（每次调用随机化）"""
+        if mobile:
+            return build_zsxq_mobile_headers(self.cookie, self.group_id)
+
         # 更丰富的User-Agent池
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -523,6 +531,7 @@ class ZSXQFileDownloader:
 
         self.log(f"   🔗 获取下载链接: ID={file_id}")
         self.log(f"   🌐 请求URL: {url}")
+        self.log("   📱 使用移动端请求画像获取下载链接")
 
         for attempt in range(max_retries):
             if attempt > 0:
@@ -534,7 +543,7 @@ class ZSXQFileDownloader:
             # 每次重试都获取新的请求头（包含新的User-Agent等）
             self.smart_delay()
             self.request_count += 1
-            headers = self.get_stealth_headers()
+            headers = self.get_stealth_headers(mobile=True)
 
             if attempt > 0:
                 print(f"   🔄 重试#{attempt}: 使用新的User-Agent: {headers.get('User-Agent', 'N/A')[:50]}...")
@@ -567,11 +576,9 @@ class ZSXQFileDownloader:
                             error_code = data.get('code', 'N/A')
                             self.log(f"   ❌ API返回失败: {error_msg} (代码: {error_code})")
 
-                            # 检查是否是1030权限错误
-                            if error_code == 1030:
-                                self.log(f"   🚫 权限不足错误(1030)：此文件只能在手机端下载，任务将自动停止")
-                                # 设置停止标志，让整个任务停止
-                                self.set_stop_flag()
+                            # 1030 通常是“禁止网页端下载文件”，移动端画像仍失败时只跳过当前文件。
+                            if is_mobile_only_error(error_code, error_msg):
+                                self.log(f"   🚫 移动端请求画像仍被拒绝: {error_msg} (代码: {error_code})")
                                 return None
 
                             # 检查是否是可重试的错误，包含全局 API 重试错误码。
@@ -655,7 +662,13 @@ class ZSXQFileDownloader:
         try:
             # 下载文件
             self.log(f"   🚀 开始下载...")
-            response = self.session.get(download_url, timeout=300, stream=True)
+            stream_headers = build_zsxq_file_stream_headers(self.cookie, self.group_id, include_cookie=False)
+            response = self.session.get(download_url, headers=stream_headers, timeout=300, stream=True)
+            if response.status_code in [401, 403]:
+                response.close()
+                self.log(f"   🔁 无 Cookie 文件流请求返回 HTTP {response.status_code}，携带 Cookie 重试")
+                stream_headers = build_zsxq_file_stream_headers(self.cookie, self.group_id, include_cookie=True)
+                response = self.session.get(download_url, headers=stream_headers, timeout=300, stream=True)
 
             # 如果文件名是默认的，尝试从响应头获取真实文件名
             if file_name.startswith('file_') and 'content-disposition' in response.headers:

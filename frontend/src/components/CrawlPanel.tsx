@@ -5,8 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Settings } from 'lucide-react';
-import { apiClient, Group, GroupStats, TaskCreateResponse } from '@/lib/api';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { RotateCcw, Settings } from 'lucide-react';
+import { apiClient, GapCandidate, Group, GroupStats, TaskCreateResponse } from '@/lib/api';
 import { toast } from 'sonner';
 import CrawlSettingsDialog from './CrawlSettingsDialog';
 import CrawlLatestDialog from './CrawlLatestDialog';
@@ -35,6 +36,10 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
   const [crawlIntervalMax, setCrawlIntervalMax] = useState<number>(5);
   const [longSleepIntervalMin, setLongSleepIntervalMin] = useState<number>(180);
   const [longSleepIntervalMax, setLongSleepIntervalMax] = useState<number>(300);
+  const [gapDialogOpen, setGapDialogOpen] = useState(false);
+  const [gapCandidates, setGapCandidates] = useState<GapCandidate[]>([]);
+  const [gapCandidatesLoading, setGapCandidatesLoading] = useState(false);
+  const [selectedGapIndex, setSelectedGapIndex] = useState<number | null>(null);
 
   const refreshLocalGroupStats = async () => {
     if (!selectedGroup) {
@@ -175,6 +180,75 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
       setLoading(null);
     }
   };
+
+  const loadGapCandidates = async () => {
+    if (!selectedGroup) {
+      setGapCandidates([]);
+      setSelectedGapIndex(null);
+      return [];
+    }
+
+    try {
+      setGapCandidatesLoading(true);
+      const res = await apiClient.getGroupGapCandidates(selectedGroup.group_id, {
+        minGapHours: 72,
+        maxGaps: 8,
+        paddingHours: 12,
+      });
+      const gaps = (res?.gaps || []) as GapCandidate[];
+      setGapCandidates(gaps);
+      setSelectedGapIndex(gaps.length > 0 ? gaps[0].gap_index : null);
+      return gaps;
+    } catch (error) {
+      toast.error(`检测断层失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      setGapCandidates([]);
+      setSelectedGapIndex(null);
+      return [];
+    } finally {
+      setGapCandidatesLoading(false);
+    }
+  };
+
+  const handleOpenGapDialog = async () => {
+    setGapDialogOpen(true);
+    await loadGapCandidates();
+  };
+
+  const handleFillGap = async () => {
+    if (!selectedGroup) {
+      toast.error('请先选择一个群组');
+      return;
+    }
+
+    const selectedGap = gapCandidates.find((gap) => gap.gap_index === selectedGapIndex) || null;
+    if (!selectedGap) {
+      toast.error('请先选择一个断层区间');
+      return;
+    }
+
+    try {
+      setLoading('gap');
+      const response = await apiClient.crawlByTimeRange(selectedGroup.group_id, {
+        startTime: selectedGap.suggested_start_time,
+        endTime: selectedGap.suggested_end_time,
+        crawlIntervalMin,
+        crawlIntervalMax,
+        longSleepIntervalMin,
+        longSleepIntervalMax,
+        pagesPerBatch: Math.max(pagesPerBatch, 5),
+      });
+      toast.success(`补全断层任务已创建: ${response.task_id}`);
+      setGapDialogOpen(false);
+      onStatsUpdate();
+      setTimeout(() => {
+        refreshLocalGroupStats();
+      }, 2000);
+    } catch (error) {
+      toast.error(`创建补全任务失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setLoading(null);
+    }
+  };
   
   // 处理爬取设置变更
   const handleCrawlSettingsChange = (settings: {
@@ -220,6 +294,26 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
     } finally {
       setLoading(null);
     }
+  };
+
+  const formatDateTime = (dateString?: string | null) => {
+    if (!dateString) return '未知时间';
+    try {
+      return new Date(dateString).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return String(dateString);
+    }
+  };
+
+  const formatGapDuration = (gap: GapCandidate) => {
+    if (gap.gap_days >= 1) return `${gap.gap_days} 天`;
+    return `${gap.gap_hours} 小时`;
   };
 
   return (
@@ -331,6 +425,116 @@ export default function CrawlPanel({ onStatsUpdate, selectedGroup }: CrawlPanelP
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+        </CardContent>
+      </Card>
+
+      {/* 补全断层区间 */}
+      <Card className="relative">
+        <ModeTip>
+          <div className="space-y-1">
+            <p className="font-medium text-gray-900">补全断层区间</p>
+            <p>自动分析本地话题时间轴中的异常空白段。</p>
+            <p>适合“老数据和新数据都抓到了一部分，但中间缺了一截”的情况。</p>
+          </div>
+        </ModeTip>
+        <CardHeader className="pr-10">
+          <CardTitle className="flex items-center gap-2">
+            <Badge variant="secondary">🧩</Badge>
+            补全断层区间
+            {hasLocalTopics ? (
+              <Badge variant="secondary" className="text-xs">新策略</Badge>
+            ) : (
+              <Badge variant="outline" className="text-xs">需本地数据</Badge>
+            )}
+          </CardTitle>
+          <CardDescription>
+            自动找出可疑时间断层，并基于推荐区间执行补抓
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="text-sm text-muted-foreground space-y-2">
+            <p>🧠 先检测本地时间轴中的大跨度空白段</p>
+            <p>🗓️ 再复用按时间区间采集自动补齐</p>
+            <p>✅ 适合半路停止后留下的“中间断层”</p>
+          </div>
+
+          <Button
+            onClick={() => { void handleOpenGapDialog(); }}
+            disabled={loading === 'gap'}
+            className="w-full bg-violet-600 hover:bg-violet-700"
+          >
+            <RotateCcw className="mr-2 h-4 w-4" />
+            {loading === 'gap' ? '创建任务中...' : '检测并补全'}
+          </Button>
+
+          <Dialog open={gapDialogOpen} onOpenChange={setGapDialogOpen}>
+            <DialogContent className="sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>补全断层区间</DialogTitle>
+                <DialogDescription>
+                  已按时间跨度从大到小列出可疑断层，建议优先补跨度最大的一个。
+                </DialogDescription>
+              </DialogHeader>
+
+              {gapCandidatesLoading ? (
+                <div className="py-6 text-sm text-gray-500">正在分析断层，请稍候...</div>
+              ) : !hasLocalTopics ? (
+                <div className="py-2 text-sm text-gray-500">
+                  当前群组还没有本地话题数据，无法分析断层。请先执行一次“获取最新”或“继续爬取历史”。
+                </div>
+              ) : gapCandidates.length === 0 ? (
+                <div className="space-y-2 py-2">
+                  <div className="text-sm text-gray-600">暂未检测到明显断层（默认阈值：72 小时）。</div>
+                  <div className="text-xs text-gray-400">如果这个群发帖频率本来就很低，建议直接手动使用时间区间采集。</div>
+                </div>
+              ) : (
+                <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                  {gapCandidates.map((gap) => (
+                    <button
+                      key={gap.gap_index}
+                      type="button"
+                      className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                        selectedGapIndex === gap.gap_index
+                          ? 'border-violet-300 bg-violet-50'
+                          : 'border-gray-200 hover:bg-gray-50'
+                      }`}
+                      onClick={() => setSelectedGapIndex(gap.gap_index)}
+                    >
+                      <div className="mb-1 flex items-center justify-between gap-3">
+                        <div className="text-sm font-medium text-gray-900">断层 #{gap.gap_index}</div>
+                        <Badge variant={selectedGapIndex === gap.gap_index ? 'default' : 'outline'} className="text-xs">
+                          跨度 {formatGapDuration(gap)}
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-gray-700">
+                        建议补抓：{formatDateTime(gap.suggested_start_time)} ~ {formatDateTime(gap.suggested_end_time)}
+                      </div>
+                      <div className="mt-1 text-[11px] text-gray-500">
+                        相邻已存在话题：新侧 {formatDateTime(gap.newer_topic_time)} ／ 旧侧 {formatDateTime(gap.older_topic_time)}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setGapDialogOpen(false)}>
+                  取消
+                </Button>
+                <Button type="button" variant="outline" onClick={() => { void loadGapCandidates(); }} disabled={gapCandidatesLoading}>
+                  重新检测
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleFillGap}
+                  className="bg-violet-600 hover:bg-violet-700"
+                  disabled={gapCandidatesLoading || gapCandidates.length === 0 || selectedGapIndex == null || loading === 'gap'}
+                >
+                  开始补全
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
 

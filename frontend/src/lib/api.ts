@@ -49,6 +49,14 @@ export interface DatabaseStats {
   };
 }
 
+export interface McpPromptInfo {
+  project_root: string;
+  script_path: string;
+  database_path?: string | null;
+  python_command: string;
+  prompt: string;
+}
+
 export interface Topic {
   topic_id: string;
   title: string;
@@ -258,6 +266,35 @@ export interface AccountSelf {
   raw_json?: any;
 }
 
+export interface GapCandidate {
+  gap_index: number;
+  sequence_index: number;
+  gap_seconds: number;
+  gap_hours: number;
+  gap_days: number;
+  newer_topic_id?: string | null;
+  newer_topic_title?: string;
+  newer_topic_time: string;
+  older_topic_id?: string | null;
+  older_topic_title?: string;
+  older_topic_time: string;
+  suggested_start_time: string;
+  suggested_end_time: string;
+  padding_hours: number;
+}
+
+export interface GapCandidatesResponse {
+  group_id: number;
+  has_data: boolean;
+  total_topics: number;
+  newest_timestamp?: string | null;
+  oldest_timestamp?: string | null;
+  min_gap_hours: number;
+  max_gaps: number;
+  padding_hours: number;
+  gaps: GapCandidate[];
+}
+
 // API客户端类
 class ApiClient {
   private baseUrl: string;
@@ -308,6 +345,11 @@ class ApiClient {
   // 数据库统计
   async getDatabaseStats(): Promise<DatabaseStats> {
     return this.request('/api/database/stats');
+  }
+
+  // MCP 接入提示词
+  async getMcpPrompt(): Promise<McpPromptInfo> {
+    return this.request('/api/mcp/prompt');
   }
 
   // 任务相关
@@ -842,6 +884,23 @@ class ApiClient {
       body: JSON.stringify(params || {}),
     });
   }
+
+  async getGroupGapCandidates(
+    groupId: number | string,
+    params?: {
+      minGapHours?: number;
+      maxGaps?: number;
+      paddingHours?: number;
+    }
+  ): Promise<GapCandidatesResponse> {
+    const query = new URLSearchParams();
+    if (params?.minGapHours != null) query.set('min_gap_hours', String(params.minGapHours));
+    if (params?.maxGaps != null) query.set('max_gaps', String(params.maxGaps));
+    if (params?.paddingHours != null) query.set('padding_hours', String(params.paddingHours));
+    const qs = query.toString();
+    return this.request(`/api/groups/${groupId}/gap-candidates${qs ? `?${qs}` : ''}`);
+  }
+
   // 删除社群本地数据
   async deleteGroup(groupId: number | string) {
     return this.request(`/api/groups/${groupId}`, {

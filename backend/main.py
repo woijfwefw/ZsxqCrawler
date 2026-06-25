@@ -65,6 +65,11 @@ from .zsxq_retry import (
     retry_wait_seconds,
     should_retry_api_code,
 )
+from .zsxq_request_profiles import (
+    build_zsxq_file_stream_headers,
+    build_zsxq_mobile_headers,
+    is_mobile_only_error,
+)
 from .zsxq_markdown_exporter import (
     article_html_to_markdown,
     column_topic_detail_to_markdown,
@@ -394,10 +399,21 @@ def get_crawler_safe() -> Optional[ZSXQInteractiveCrawler]:
 def get_primary_cookie() -> Optional[str]:
     """
     获取当前优先使用的Cookie：
-    1. 若账号管理中存在账号，则优先使用第一个账号的Cookie
-    2. 否则回退到 config.toml 中的 Cookie（若已配置）
+    1. 若 config.toml 中存在当前登录 Cookie，则优先使用它
+    2. 否则回退到账号管理中的第一个账号 Cookie
     """
-    # 1. 第一个账号
+    # 1. config.toml 中的当前登录 Cookie
+    try:
+        config = load_config()
+        if config:
+            auth_config = config.get("auth", {}) or {}
+            cookie = (auth_config.get("cookie") or "").strip()
+            if cookie and cookie != "your_cookie_here":
+                return cookie
+    except Exception:
+        pass
+
+    # 2. 第一个账号
     try:
         sql_mgr = get_accounts_sql_manager()
         first_acc = sql_mgr.get_first_account(mask_cookie=False)
@@ -407,18 +423,6 @@ def get_primary_cookie() -> Optional[str]:
                 return cookie
     except Exception:
         pass
-
-    # 2. config.toml 中的 Cookie
-    try:
-        config = load_config()
-        if not config:
-            return None
-        auth_config = config.get("auth", {}) or {}
-        cookie = (auth_config.get("cookie") or "").strip()
-        if cookie and cookie != "your_cookie_here":
-            return cookie
-    except Exception:
-        return None
 
     return None
 
@@ -1384,6 +1388,140 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now()}
 
 
+def _find_default_mcp_database_path() -> Optional[str]:
+    """为 MCP 选择默认项目输出数据库，不再默认读取项目根目录 zsxq.db。"""
+    topics_candidates: List[str] = []
+    all_output_candidates: List[str] = []
+    databases_dir = os.path.join(project_root, "output", "databases")
+    if os.path.isdir(databases_dir):
+        for dirpath, _, filenames in os.walk(databases_dir):
+            for filename in filenames:
+                lower_name = filename.lower()
+                full_path = os.path.join(dirpath, filename)
+                if (
+                    lower_name.endswith(".db")
+                    and (
+                        lower_name.startswith("zsxq_topics_")
+                        or lower_name.startswith("zsxq_files_")
+                        or lower_name.startswith("zsxq_columns_")
+                    )
+                ):
+                    all_output_candidates.append(full_path)
+                if lower_name.startswith("zsxq_topics_") and lower_name.endswith(".db"):
+                    topics_candidates.append(full_path)
+
+    if topics_candidates:
+        topics_candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        for candidate in topics_candidates:
+            try:
+                with sqlite3.connect(candidate) as conn:
+                    count = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+                if count > 0:
+                    return candidate
+            except Exception:
+                continue
+
+    if all_output_candidates:
+        all_output_candidates.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        return all_output_candidates[0]
+
+    return None
+
+
+def _build_mcp_install_prompt(script_path: str, database_path: Optional[str], python_command: str) -> str:
+    """生成可复制给 AI 的 MCP 配置提示词。"""
+    args = [script_path]
+    toml_args = ",\n  ".join(json.dumps(item, ensure_ascii=False) for item in args)
+    json_config = json.dumps(
+        {
+            "mcpServers": {
+                "zsxq-data": {
+                    "command": python_command,
+                    "args": args,
+                }
+            }
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    db_note = (
+        f"- 已发现项目输出数据库示例：{database_path}（配置时通常不需要写入 --db，脚本会自动从 output/databases 发现全部群组）"
+        if database_path
+        else "- 当前未发现项目输出数据库；请先确认项目 output/databases 下存在 zsxq_topics_*.db、zsxq_files_*.db 或 zsxq_columns_*.db。"
+    )
+
+    return f"""你是我的本地开发助手。请帮我配置并启用一个独立的知识星球数据库 MCP。
+
+已知文件路径：
+- MCP 脚本：{script_path}
+{db_note}
+- 推荐 Python 命令：{python_command}
+
+目标：
+把 zsxq_mcp.py 配置为本地 stdio MCP 服务，服务名统一使用 zsxq-data，让当前 AI 客户端可以通过 MCP 只读分析知识星球 SQLite 数据库。默认不要绑定项目根目录 zsxq.db，也不要固定某一个群组库；让脚本自动从项目 output/databases 发现全部群组。
+
+请按以下步骤执行：
+
+1. 检查 MCP 脚本是否存在：{script_path}
+2. 检查 Python 是否可用。优先使用上面的推荐 Python 命令；如果不可用，再尝试 python 或 python3。
+3. 找到当前 AI 客户端的 MCP 配置文件，例如：
+   - Codex: 用户主目录下的 .codex/config.toml
+   - Claude Desktop: claude_desktop_config.json
+   - Cursor / Windsurf / 其他客户端：按当前客户端 MCP 配置规则处理
+4. 新增或更新名为 zsxq-data 的 MCP 服务；如果已存在，请更新原配置，不要重复添加。
+
+如果客户端使用 TOML 配置，配置应等价于：
+
+[mcp_servers.zsxq-data]
+type = "stdio"
+command = {json.dumps(python_command, ensure_ascii=False)}
+args = [
+  {toml_args}
+]
+
+如果客户端使用 JSON 配置，配置应等价于：
+
+{json_config}
+
+5. 保存配置后，检查配置语法是否有效，不要破坏已有 MCP 服务。
+6. 提醒我重启或重新加载 AI 客户端，让 zsxq-data MCP 生效。
+7. 重启后，请优先调用 zsxq-data 的 list_groups、list_databases、group_database_stats、compare_project_schema、database_stats 验证连接。
+
+使用规则：
+- 默认只读分析。
+- 多群组分析优先使用 list_groups、group_database_stats、search_topics_all_groups、get_topic_detail_any_group。
+- 单库分析再使用 list_databases、compare_project_schema、schema_summary、database_stats、search_topics、get_topic_detail。
+- 只有必要时才使用 query_sql。
+- query_sql 只能执行 SELECT、WITH、EXPLAIN、安全 PRAGMA。
+- 禁止 INSERT、UPDATE、DELETE、DROP、ALTER、CREATE 等写入或结构变更操作。
+
+如果 MCP 工具没有出现，请不要编造结果，请排查脚本路径、数据库路径、Python 命令、配置语法和客户端重启状态。"""
+
+
+@app.get("/api/assets/mcp.svg")
+async def get_mcp_icon():
+    """读取项目根目录下的 MCP 图标。"""
+    icon_path = os.path.join(project_root, "mcp.svg")
+    if not os.path.isfile(icon_path):
+        raise HTTPException(status_code=404, detail="MCP icon not found")
+    return FileResponse(icon_path, media_type="image/svg+xml")
+
+
+@app.get("/api/mcp/prompt")
+async def get_mcp_prompt():
+    """生成用于接入 MCP 的复制提示词。"""
+    script_path = os.path.join(project_root, "zsxq_mcp.py")
+    database_path = _find_default_mcp_database_path()
+    python_command = sys.executable or "python"
+    return {
+        "project_root": project_root,
+        "script_path": script_path,
+        "database_path": database_path,
+        "python_command": python_command,
+        "prompt": _build_mcp_install_prompt(script_path, database_path, python_command),
+    }
+
+
 @app.get("/api/groups/{group_id}/export")
 async def export_group_folder(group_id: str):
     try:
@@ -1527,6 +1665,7 @@ dir = "downloads"
         # 重置爬虫实例，强制重新加载配置
         global crawler_instance
         crawler_instance = None
+        clear_account_detect_cache()
 
         return {"message": "配置更新成功", "success": True}
     except Exception as e:
@@ -1701,13 +1840,12 @@ async def remove_account(account_id: str):
 
 @app.post("/api/groups/{group_id}/assign-account")
 async def assign_account_to_group(group_id: str, request: AssignGroupAccountRequest):
-    """分配群组到指定账号"""
+    """兼容旧接口：社群账号绑定已废弃，统一改为运行时自动匹配。"""
     try:
-        sql_mgr = get_accounts_sql_manager()
-        ok, msg = sql_mgr.assign_group_account(group_id, request.account_id)
-        if not ok:
-            raise HTTPException(status_code=400, detail=msg)
-        return {"success": True, "message": msg}
+        return {
+            "success": True,
+            "message": "社群与账号的静态绑定已废弃；系统会根据当前登录 Cookie 和可用账号自动匹配可访问该社群的账号。"
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -4573,6 +4711,40 @@ async def get_group_stats(group_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取群组统计失败: {str(e)}")
 
+@app.get("/api/groups/{group_id}/gap-candidates")
+async def get_group_gap_candidates(
+    group_id: int,
+    min_gap_hours: float = 72.0,
+    max_gaps: int = 5,
+    padding_hours: float = 12.0,
+):
+    """分析本地话题时间轴中的可疑断层，返回建议补全区间。"""
+    db = None
+    try:
+        db = _open_local_topics_db(str(group_id))
+        stats = db.get_timestamp_range_info()
+        gaps = db.get_gap_candidates(
+            max_gaps=max_gaps,
+            min_gap_hours=min_gap_hours,
+            padding_hours=padding_hours,
+        )
+        return {
+            "group_id": group_id,
+            "has_data": bool(stats.get("has_data")),
+            "total_topics": int(stats.get("total_topics") or 0),
+            "newest_timestamp": stats.get("newest_timestamp"),
+            "oldest_timestamp": stats.get("oldest_timestamp"),
+            "min_gap_hours": min_gap_hours,
+            "max_gaps": max_gaps,
+            "padding_hours": padding_hours,
+            "gaps": gaps,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"分析群组断层失败: {str(e)}")
+    finally:
+        if db:
+            db.close()
+
 @app.get("/api/groups/{group_id}/database-info")
 async def get_group_database_info(group_id: int):
     """获取指定群组的数据库信息"""
@@ -4896,15 +5068,50 @@ _account_detect_cache: Dict[str, Any] = {
 def clear_account_detect_cache():
     """清除账号群组检测缓存，使新账号/删除账号后群组立即刷新"""
     _account_detect_cache["built_at"] = 0
+    _account_detect_cache["group_to_account"] = {}
+    _account_detect_cache["cookie_by_account"] = {}
+
+
+def _get_config_cookie_source() -> Optional[Dict[str, Any]]:
+    """获取 config.toml 中当前登录账号的伪账号源。"""
+    try:
+        cfg = load_config()
+        auth = cfg.get("auth", {}) if cfg else {}
+        cookie = (auth.get("cookie") or "").strip()
+        if not cookie or cookie == "your_cookie_here":
+            return None
+        return {
+            "id": "default",
+            "name": "当前登录账号",
+            "cookie": cookie,
+            "created_at": None,
+            "is_default": True,
+            "source": "config",
+        }
+    except Exception:
+        return None
 
 def _get_all_account_sources() -> List[Dict[str, Any]]:
-    """获取所有账号来源"""
+    """获取所有账号来源，优先当前登录 Cookie，其次账号管理中的账号。"""
     sources: List[Dict[str, Any]] = []
+    seen_cookies = set()
+
+    config_source = _get_config_cookie_source()
+    if config_source:
+        cookie = (config_source.get("cookie") or "").strip()
+        if cookie:
+            sources.append(config_source)
+            seen_cookies.add(cookie)
+
     try:
         sql_mgr = get_accounts_sql_manager()
         accounts = sql_mgr.get_accounts(mask_cookie=False)
-        if accounts:
-            sources.extend(accounts)
+        for acc in accounts or []:
+            cookie = (acc.get("cookie") or "").strip()
+            if not cookie or cookie in seen_cookies:
+                continue
+            sources.append(acc)
+            seen_cookies.add(cookie)
     except Exception:
         pass
     return sources
@@ -4975,7 +5182,18 @@ def get_account_summary_for_group_auto(group_id: str) -> Optional[Dict[str, Any]
     if summary:
         return summary
 
-    # 如果没有匹配的账号，返回第一个账号
+    # 如果没有匹配到具体群组，优先返回当前登录账号
+    config_source = _get_config_cookie_source()
+    if config_source:
+        return {
+            "id": config_source["id"],
+            "name": config_source["name"],
+            "created_at": config_source.get("created_at"),
+            "cookie": "***",
+            "is_default": True,
+        }
+
+    # 否则返回第一个账号
     try:
         sql_mgr = get_accounts_sql_manager()
         first_acc = sql_mgr.get_first_account(mask_cookie=True)
@@ -4984,7 +5202,8 @@ def get_account_summary_for_group_auto(group_id: str) -> Optional[Dict[str, Any]
                 "id": first_acc["id"],
                 "name": first_acc["name"],
                 "created_at": first_acc["created_at"],
-                "cookie": first_acc["cookie"]
+                "cookie": first_acc["cookie"],
+                "is_default": bool(first_acc.get("is_default")),
             }
     except Exception:
         pass
@@ -6045,10 +6264,13 @@ async def _download_column_file(group_id: str, file_id: int, file_name: str, fil
     download_url = f"https://api.zsxq.com/v2/files/{file_id}/download_url"
     max_retries = GLOBAL_API_MAX_RETRIES
     real_url = None
+    cookie = headers.get('Cookie') or headers.get('cookie') or ''
+    mobile_api_headers = build_zsxq_mobile_headers(cookie, group_id) if cookie else headers
+    mobile_stream_headers = build_zsxq_file_stream_headers(cookie, group_id, include_cookie=False) if cookie else headers
     
     for retry in range(max_retries):
         try:
-            resp = requests.get(download_url, headers=headers, timeout=30)
+            resp = requests.get(download_url, headers=mobile_api_headers, timeout=30)
         except Exception as req_err:
             if retry < max_retries - 1:
                 wait_time = 2 if retry < 3 else (5 if retry < 6 else 10)
@@ -6079,6 +6301,10 @@ async def _download_column_file(group_id: str, file_id: int, file_name: str, fil
             if is_global_retry_code(error_code):
                 log_error(f"获取下载链接重试{max_retries}次后仍失败: file_id={file_id}, code={error_code}")
                 raise Exception(f"获取下载链接失败，重试{max_retries}次后仍遇到反爬限制")
+            elif is_mobile_only_error(error_code, error_message):
+                error_msg = f"移动端请求画像仍被拒绝: code={error_code}, message={error_message}, file_id={file_id}, file_name={file_name}"
+                log_error(error_msg)
+                raise Exception(f"Mobile profile rejected: {error_message} (code={error_code})")
             else:
                 error_msg = f"获取下载链接失败: code={error_code}, message={error_message}, file_id={file_id}, file_name={file_name}"
                 log_error(error_msg)
@@ -6099,7 +6325,11 @@ async def _download_column_file(group_id: str, file_id: int, file_name: str, fil
     
     for download_attempt in range(download_retries):
         try:
-            file_resp = requests.get(real_url, headers=headers, stream=True, timeout=300)
+            file_resp = requests.get(real_url, headers=mobile_stream_headers, stream=True, timeout=300)
+            if file_resp.status_code in [401, 403] and cookie:
+                file_resp.close()
+                cookie_stream_headers = build_zsxq_file_stream_headers(cookie, group_id, include_cookie=True)
+                file_resp = requests.get(real_url, headers=cookie_stream_headers, stream=True, timeout=300)
             if file_resp.status_code == 200:
                 with open(local_path, 'wb') as f:
                     for chunk in file_resp.iter_content(chunk_size=8192):
@@ -6162,10 +6392,12 @@ async def _download_column_video(group_id: str, video_id: int, video_size: int, 
     video_url_api = f"https://api.zsxq.com/v2/videos/{video_id}/url"
     max_retries = GLOBAL_API_MAX_RETRIES
     m3u8_url = None
+    cookie = headers.get('Cookie') or headers.get('cookie') or ''
+    mobile_api_headers = build_zsxq_mobile_headers(cookie, group_id) if cookie else headers
     
     for retry in range(max_retries):
         try:
-            resp = requests.get(video_url_api, headers=headers, timeout=30)
+            resp = requests.get(video_url_api, headers=mobile_api_headers, timeout=30)
         except Exception as req_err:
             if retry < max_retries - 1:
                 wait_time = 2 if retry < 3 else (5 if retry < 6 else 10)
@@ -6196,6 +6428,10 @@ async def _download_column_video(group_id: str, video_id: int, video_size: int, 
             if is_global_retry_code(error_code):
                 log_error(f"获取视频链接重试{max_retries}次后仍失败: video_id={video_id}, code={error_code}")
                 raise Exception(f"获取视频链接失败，重试{max_retries}次后仍遇到反爬限制")
+            elif is_mobile_only_error(error_code, error_message):
+                error_msg = f"移动端请求画像仍被拒绝: code={error_code}, message={error_message}, video_id={video_id}, topic_id={topic_id}"
+                log_error(error_msg)
+                raise Exception(f"Mobile profile rejected: {error_message} (code={error_code})")
             else:
                 error_msg = f"获取视频链接失败: code={error_code}, message={error_message}, video_id={video_id}, topic_id={topic_id}"
                 log_error(error_msg)
@@ -6223,13 +6459,11 @@ async def _download_column_video(group_id: str, video_id: int, video_size: int, 
         # 构建 HTTP headers 字符串给 ffmpeg
         # ffmpeg 需要的格式是 "Header1: Value1\r\nHeader2: Value2\r\n"
         ffmpeg_headers = ""
-        if headers.get('Cookie'):
-            ffmpeg_headers += f"Cookie: {headers['Cookie']}\r\n"
-        if headers.get('cookie'):
-            ffmpeg_headers += f"Cookie: {headers['cookie']}\r\n"
-        ffmpeg_headers += "Referer: https://wx.zsxq.com/\r\n"
-        ffmpeg_headers += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
-        ffmpeg_headers += "Origin: https://wx.zsxq.com\r\n"
+        ffmpeg_header_map = build_zsxq_mobile_headers(cookie, group_id, include_host=False) if cookie else headers
+        for header_name in ["Cookie", "Referer", "User-Agent", "Origin", "Accept-Language"]:
+            header_value = ffmpeg_header_map.get(header_name) or ffmpeg_header_map.get(header_name.lower())
+            if header_value:
+                ffmpeg_headers += f"{header_name}: {header_value}\r\n"
         
         # 使用ffmpeg下载（带请求头和进度显示）
         cmd = [
@@ -6409,13 +6643,9 @@ async def delete_all_columns(group_id: str):
 async def get_column_topic_full_comments(group_id: str, topic_id: str):
     """获取专栏文章的完整评论列表（从API实时获取并持久化到数据库）"""
     try:
-        # 获取该群组使用的账号
-        manager = get_accounts_sql_manager()
-        account = manager.get_account_for_group(group_id, mask_cookie=False)
-        if not account or not account.get('cookie'):
-            raise HTTPException(status_code=400, detail="No valid account found for this group")
-
-        cookie = account['cookie']
+        cookie = get_cookie_for_group(group_id)
+        if not cookie:
+            raise HTTPException(status_code=400, detail="No valid cookie found for this group")
         # 使用与专栏采集相同的请求头构建方式
         headers = build_stealth_headers(cookie)
 
